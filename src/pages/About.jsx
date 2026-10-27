@@ -1,0 +1,6 @@
+import CTA from '../components/CTA.jsx';
+const benefits = [
+  { title: 'For learners', text: 'Find practical, approachable guidance from someone who has already learned the skill you want to build.' },
+  { title: 'For teachers', text: 'Share your knowledge, strengthen your own understanding, and help another learner make progress.' }
+];
+export default function About() { return <><section className="page-section about-page"><div className="container about-container"><span className="eyebrow">A community for curious people</span><h1>Skills grow when they’re shared.</h1><p className="about-lead">SkillSwap is a peer-to-peer learning platform where people can exchange knowledge by teaching skills they know and learning skills they want to develop.</p><div className="about-note"><span aria-hidden="true">✳</span><div><h2>Learning goes both ways.</h2><p>We built SkillSwap around a simple idea: everyone has something to teach and something new to learn. The platform helps people find one another and make learning feel more personal.</p></div></div><div className="about-benefits">{benefits.map(item => <article key={item.title}><h2>{item.title}</h2><p>{item.text}</p></article>)}</div><p className="sample-note">SkillSwap is a college project. Profiles and content shown here are sample frontend data.</p></div></section><CTA /></>; }

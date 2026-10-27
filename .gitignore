@@ -1,0 +1,31 @@
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Node.js dependencies
+node_modules/
+.npm-cache/
+
+# Build output
+dist/
+
+# Python generated files and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local editor settings
+.vscode/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Python package cache and temporary files
+.pip-cache/
+.pip-tmp/
+**/.pip-cache/
+**/.pip-tmp/

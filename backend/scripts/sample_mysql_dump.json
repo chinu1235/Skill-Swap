@@ -1,0 +1,90 @@
+{
+  "users": [
+    {
+      "id": 1,
+      "full_name": "Kalpesh Sharma",
+      "email": "kalpesh@gmail.com",
+      "password_hash": "scrypt:32768:8:1$Ea8vK9eZ$d89d465355fbba75e01614e7a08bda6ebc249a466453ea1a04d2dbf6ab095204481358bfa934e622eb1f7b7ea05c86c359d9f583e72ca41b21319202166e4a64",
+      "role": "teacher",
+      "created_at": "2026-01-10T09:30:00Z"
+    },
+    {
+      "id": 2,
+      "full_name": "Aarav Patel",
+      "email": "aarav@gmail.com",
+      "password_hash": "scrypt:32768:8:1$Ea8vK9eZ$d89d465355fbba75e01614e7a08bda6ebc249a466453ea1a04d2dbf6ab095204481358bfa934e622eb1f7b7ea05c86c359d9f583e72ca41b21319202166e4a64",
+      "role": "learner",
+      "created_at": "2026-01-12T11:00:00Z"
+    },
+    {
+      "id": 3,
+      "full_name": "Priya Nair",
+      "email": "priya@gmail.com",
+      "password_hash": "scrypt:32768:8:1$Ea8vK9eZ$d89d465355fbba75e01614e7a08bda6ebc249a466453ea1a04d2dbf6ab095204481358bfa934e622eb1f7b7ea05c86c359d9f583e72ca41b21319202166e4a64",
+      "role": "teacher",
+      "created_at": "2026-01-15T14:20:00Z"
+    }
+  ],
+  "skills": [
+    { "id": 1, "skill_name": "Python", "category": "Programming" },
+    { "id": 2, "skill_name": "React", "category": "Technology" },
+    { "id": 3, "skill_name": "UI/UX Design", "category": "Design" },
+    { "id": 4, "skill_name": "Web Development", "category": "Technology" }
+  ],
+  "teacher_profiles": [
+    {
+      "id": 1,
+      "user_id": 1,
+      "bio": "Experienced Python mentor and web developer with 6+ years in industry.",
+      "experience": "6 years",
+      "teaching_style": "Hands-on projects and step-by-step mentoring",
+      "rating": 4.90,
+      "total_sessions": 24,
+      "created_at": "2026-01-10T10:00:00Z"
+    },
+    {
+      "id": 2,
+      "user_id": 3,
+      "bio": "Passionate UI/UX designer and frontend coach.",
+      "experience": "4 years",
+      "teaching_style": "Visual diagrams and live Figma workshops",
+      "rating": 4.80,
+      "total_sessions": 15,
+      "created_at": "2026-01-15T15:00:00Z"
+    }
+  ],
+  "teacher_skills": [
+    { "id": 1, "teacher_id": 1, "skill_id": 1 },
+    { "id": 2, "teacher_id": 1, "skill_id": 4 },
+    { "id": 3, "teacher_id": 2, "skill_id": 2 },
+    { "id": 4, "teacher_id": 2, "skill_id": 3 }
+  ],
+  "bookings": [
+    {
+      "id": 1,
+      "learner_id": 2,
+      "teacher_id": 1,
+      "skill_id": 1,
+      "booking_date": "2026-11-20",
+      "booking_time": "14:00:00",
+      "duration_minutes": 60,
+      "session_type": "Online",
+      "notes": "Looking forward to learning Python fundamentals",
+      "status": "pending",
+      "created_at": "2026-02-01T10:00:00Z"
+    },
+    {
+      "id": 2,
+      "learner_id": 2,
+      "teacher_id": 1,
+      "skill_id": 1,
+      "booking_date": "2026-11-20",
+      "booking_time": "10:00:00",
+      "duration_minutes": 60,
+      "session_type": "Online",
+      "notes": "Earlier session that was cancelled",
+      "status": "cancelled",
+      "created_at": "2026-01-30T10:00:00Z"
+    }
+  ]
+}

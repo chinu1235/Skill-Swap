@@ -1,0 +1,2 @@
+import { Link } from 'react-router-dom';
+export default function CTA() { return <section className="cta-section"><div className="container cta-inner"><div><span className="eyebrow">Your next chapter starts here</span><h2>Ready to learn or share a skill?</h2><p>Find your people, trade ideas, and grow together.</p></div><div className="cta-actions"><Link className="button button-light" to="/explore">Explore Skills</Link><Link className="button button-cta-outline" to="/signup">Join SkillSwap</Link></div></div></section>; }
