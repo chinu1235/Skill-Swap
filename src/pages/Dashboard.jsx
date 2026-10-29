@@ -1,6 +1,6 @@
 import { skills as demoSkills } from '../data/teachers.js';
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiRequest } from '../services/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -14,6 +14,7 @@ function BookingDetails({ booking }) {
       <span className="booking-status">
         Status: {booking.status}
       </span>
+      {booking.sessionState === 'review_required' && <span className="booking-status" role="status">Session review required</span>}
     </div>
   );
 }
@@ -45,6 +46,8 @@ function getBookingDateTime(booking) {
 }
 
 export default function Dashboard() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const isTeacher = user?.role === 'teacher';
 
@@ -324,6 +327,15 @@ export default function Dashboard() {
     setReviewError('');
   };
 
+  useEffect(() => {
+    const bookingId = location.state?.reviewBookingId;
+    if (!bookingId || loading || isTeacher) return;
+    const booking = bookings.find((item) => String(item.id) === String(bookingId));
+    if (booking?.status === 'completed' && !booking.hasReview) openReviewModal(booking);
+    else if (booking?.hasReview) setNotice('This session has already been reviewed.');
+    navigate(location.pathname, { replace: true, state: null });
+  }, [bookings, isTeacher, loading, location.pathname, location.state, navigate]);
+
   const closeReviewModal = () => {
     setReviewModalBooking(null);
     setReviewForm({ rating: 5, comment: '' });
@@ -397,8 +409,12 @@ export default function Dashboard() {
             <BookingDetails booking={booking} />
 
             <div className="dashboard-booking-actions">
+              {booking.status === 'confirmed' && (
+                <Link className="button" to={`/classroom/${booking.id}`}>Open classroom</Link>
+              )}
+
               {!isTeacher &&
-                ['pending', 'confirmed'].includes(booking.status) && (
+                ['pending', 'confirmed'].includes(booking.status) && !booking.sessionStartedAt && (
                   <button
                     className="button button-outline"
                     type="button"
@@ -448,16 +464,8 @@ export default function Dashboard() {
                 </>
               )}
 
-              {isTeacher && booking.status === 'confirmed' && (
+              {isTeacher && booking.status === 'confirmed' && !booking.sessionStartedAt && (
                 <>
-                  <button
-                    className="button"
-                    type="button"
-                    disabled={workingBooking === booking.id}
-                    onClick={() => changeBooking(booking, 'completed')}
-                  >
-                    Mark Completed
-                  </button>
                   <button
                     className="button button-outline"
                     type="button"

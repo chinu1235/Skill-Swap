@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 from bson import ObjectId
 
@@ -18,6 +19,7 @@ def app():
         "TESTING": True,
         "MONGODB_DB_NAME": test_db_name,
         "JWT_SECRET_KEY": "test_secret_key_12345_very_long_secure_key_for_testing_2026",
+        "OTP_HASH_SECRET": "test_otp_hash_secret_12345_very_long_secure_key_2026",
     }
     app = create_app(test_config=test_config)
     with app.app_context():
@@ -25,7 +27,12 @@ def app():
         # Clean test DB
         db.client.drop_database(test_db_name)
         init_db_indexes(db)
+    sent_codes = {}
+    sender = patch("app.routes.auth.send_verification_code", side_effect=lambda email, code: sent_codes.__setitem__(email, code))
+    sender.start()
+    app.test_otp_codes = sent_codes
     yield app
+    sender.stop()
     with app.app_context():
         db = get_db()
         db.client.drop_database(test_db_name)
@@ -42,6 +49,14 @@ def db(app):
         return get_db()
 
 
+def register_verified(client, app, payload):
+    response = client.post("/api/auth/register", json=payload)
+    assert response.status_code == 202
+    verification = client.post("/api/auth/verify", json={"email": payload["email"], "code": app.test_otp_codes[payload["email"]]})
+    assert verification.status_code == 201
+    return verification
+
+
 def test_health_check(client):
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -50,7 +65,7 @@ def test_health_check(client):
     assert data["database"] == "connected"
 
 
-def test_user_registration_and_hash(client, db):
+def test_user_registration_and_hash(client, db, app):
     # Register learner
     payload = {
         "fullName": "Test Learner",
@@ -59,6 +74,8 @@ def test_user_registration_and_hash(client, db):
         "role": "learner",
     }
     res = client.post("/api/auth/register", json=payload)
+    assert res.status_code == 202
+    res = client.post("/api/auth/verify", json={"email": payload["email"], "code": app.test_otp_codes[payload["email"]]})
     assert res.status_code == 201
     data = res.get_json()
     assert "user" in data
@@ -82,17 +99,14 @@ def test_user_registration_and_hash(client, db):
     assert "already registered" in res_dup.get_json()["error"]
 
 
-def test_user_login_and_me(client):
+def test_user_login_and_me(client, app):
     # Register teacher
-    reg_res = client.post(
-        "/api/auth/register",
-        json={
-            "fullName": "Professor Test",
-            "email": "prof_test@example.com",
-            "password": "SecretPassword123",
-            "role": "teacher",
-        },
-    )
+    reg_res = register_verified(client, app, {
+        "fullName": "Professor Test",
+        "email": "prof_test@example.com",
+        "password": "SecretPassword123",
+        "role": "teacher",
+    })
     assert reg_res.status_code == 201
 
     # Login
@@ -136,17 +150,14 @@ def test_skills_listing(client, db):
     assert "React" in names
 
 
-def test_teacher_profile_and_skills_flow(client, db):
+def test_teacher_profile_and_skills_flow(client, db, app):
     # Register teacher
-    reg = client.post(
-        "/api/auth/register",
-        json={
-            "fullName": "Sarah Mentor",
-            "email": "sarah@example.com",
-            "password": "Password123!",
-            "role": "teacher",
-        },
-    )
+    reg = register_verified(client, app, {
+        "fullName": "Sarah Mentor",
+        "email": "sarah@example.com",
+        "password": "Password123!",
+        "role": "teacher",
+    })
     token = client.post(
         "/api/auth/login",
         json={"email": "sarah@example.com", "password": "Password123!"},
@@ -205,17 +216,14 @@ def test_teacher_profile_and_skills_flow(client, db):
     assert del_skill.status_code == 200
 
 
-def test_booking_and_conflict_prevention(client, db):
+def test_booking_and_conflict_prevention(client, db, app):
     # Setup teacher with Python skill
-    client.post(
-        "/api/auth/register",
-        json={
-            "fullName": "David Coach",
-            "email": "david@example.com",
-            "password": "Password123!",
-            "role": "teacher",
-        },
-    )
+    register_verified(client, app, {
+        "fullName": "David Coach",
+        "email": "david@example.com",
+        "password": "Password123!",
+        "role": "teacher",
+    })
     t_token = client.post(
         "/api/auth/login",
         json={"email": "david@example.com", "password": "Password123!"},
@@ -236,15 +244,12 @@ def test_booking_and_conflict_prevention(client, db):
     )
 
     # Setup learner
-    client.post(
-        "/api/auth/register",
-        json={
-            "fullName": "Student Bob",
-            "email": "bob@example.com",
-            "password": "Password123!",
-            "role": "learner",
-        },
-    )
+    register_verified(client, app, {
+        "fullName": "Student Bob",
+        "email": "bob@example.com",
+        "password": "Password123!",
+        "role": "learner",
+    })
     l_token = client.post(
         "/api/auth/login",
         json={"email": "bob@example.com", "password": "Password123!"},
@@ -315,12 +320,9 @@ def test_migration_from_fixture(app):
     client.close()
 
 
-def test_booking_lifecycle_and_queries(client, db):
+def test_booking_lifecycle_and_queries(client, db, app):
     # Teacher
-    client.post(
-        "/api/auth/register",
-        json={"fullName": "Dr. Smith", "email": "smith@example.com", "password": "Password123!", "role": "teacher"},
-    )
+    register_verified(client, app, {"fullName": "Dr. Smith", "email": "smith@example.com", "password": "Password123!", "role": "teacher"})
     t_token = client.post(
         "/api/auth/login",
         json={"email": "smith@example.com", "password": "Password123!"},
@@ -330,10 +332,7 @@ def test_booking_lifecycle_and_queries(client, db):
     t_id = t_res.get_json()["teacher"]["id"]
 
     # Learner
-    client.post(
-        "/api/auth/register",
-        json={"fullName": "Alice Learner", "email": "alice@example.com", "password": "Password123!", "role": "learner"},
-    )
+    register_verified(client, app, {"fullName": "Alice Learner", "email": "alice@example.com", "password": "Password123!", "role": "learner"})
     l_token = client.post(
         "/api/auth/login",
         json={"email": "alice@example.com", "password": "Password123!"},
@@ -378,12 +377,12 @@ def test_booking_lifecycle_and_queries(client, db):
     assert status_res.status_code == 200
     assert status_res.get_json()["booking"]["status"] == "confirmed"
 
-    # Teacher completes booking
+    # Completion is allowed only through a started classroom session.
     status_res2 = client.put(
         f"/api/bookings/{b_id}/status",
         headers=t_headers,
         json={"status": "completed"},
     )
-    assert status_res2.status_code == 200
-    assert status_res2.get_json()["booking"]["status"] == "completed"
+    assert status_res2.status_code == 400
+    assert db.bookings.find_one({"_id": ObjectId(b_id)})["status"] == "confirmed"
 

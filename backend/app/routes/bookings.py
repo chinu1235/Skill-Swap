@@ -1,12 +1,25 @@
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
+import base64
+import hashlib
+import hmac
 import re
+import time as clock_time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from bson import ObjectId
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from ..config import DatabaseConfigurationError
 from ..db import DatabaseUnavailableError, get_db, to_object_id
+from ..extensions import socketio
+from ..utils.code_execution import (
+    ExecutionConfigurationError,
+    ExecutionServiceError,
+    UnsupportedExecutionLanguage,
+    execute_code,
+)
 
 bookings_bp = Blueprint("bookings", __name__)
 VALID_STATUSES = {"pending", "confirmed", "completed", "cancelled"}
@@ -22,7 +35,7 @@ def _error(message, status):
 
 
 def _database_error(error):
-    current_app.logger.error("Booking API database operation failed: %s", error)
+    current_app.logger.error("Booking API database operation failed (%s)", type(error).__name__)
     return _error("Booking service is temporarily unavailable", 503)
 
 
@@ -59,6 +72,9 @@ def _booking_payload(doc, learner_name=None, teacher_name=None, skill_doc=None, 
         "notes": doc.get("notes"),
         "status": doc["status"],
         "createdAt": doc["created_at"].isoformat() if doc.get("created_at") else None,
+        "sessionState": _session_state(doc),
+        "sessionStartedAt": doc.get("session_started_at").isoformat() if doc.get("session_started_at") else None,
+        "sessionEndedAt": doc.get("session_ended_at").isoformat() if doc.get("session_ended_at") else None,
     }
 
     if party == "teacher":
@@ -85,6 +101,76 @@ def _booking_payload(doc, learner_name=None, teacher_name=None, skill_doc=None, 
             else None
         )
     return payload
+
+
+def _session_window(booking):
+    zone_name = current_app.config.get("SESSION_TIMEZONE", "Asia/Kolkata")
+    try:
+        tz = ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        fixed_zones = {
+            "UTC": timezone.utc,
+            "Etc/UTC": timezone.utc,
+            "Asia/Kolkata": timezone(timedelta(hours=5, minutes=30)),
+            "Asia/Calcutta": timezone(timedelta(hours=5, minutes=30)),
+        }
+        if zone_name not in fixed_zones:
+            raise ValueError("Timezone data is unavailable for SESSION_TIMEZONE")
+        tz = fixed_zones[zone_name]
+    start_date = date.fromisoformat(booking["booking_date"])
+    start_time = time.fromisoformat(booking["booking_time"])
+    start = datetime.combine(start_date, start_time, tzinfo=tz)
+    end = start + timedelta(minutes=int(booking["duration_minutes"]))
+    deadline = end + timedelta(minutes=max(0, int(current_app.config.get("SESSION_END_GRACE_MINUTES", 15))))
+    return start, end, deadline
+
+
+def _session_state(booking, now=None):
+    if booking.get("session_state") == "review_required":
+        return "review_required"
+    if booking.get("session_ended_at") or booking.get("status") == "completed":
+        return "completed"
+    if booking.get("session_started_at"):
+        try:
+            _start, _end, deadline = _session_window(booking)
+            if (now or datetime.now(timezone.utc)).astimezone(deadline.tzinfo) > deadline:
+                return "review_required"
+        except (TypeError, ValueError, KeyError):
+            return "review_required"
+        return "in_progress"
+    return "not_started"
+
+
+def _refresh_review_state(db, booking, now=None):
+    state = _session_state(booking, now)
+    if state == "review_required" and booking.get("session_started_at") and not booking.get("session_ended_at"):
+        db.bookings.update_one(
+            {"_id": booking["_id"], "status": "confirmed", "session_started_at": {"$exists": True}, "session_ended_at": {"$exists": False}},
+            {"$set": {"session_state": "review_required"}},
+        )
+        booking["session_state"] = "review_required"
+    elif state == "in_progress":
+        booking["session_state"] = state
+    return booking
+
+
+def _is_booking_participant(db, booking, user_id):
+    if booking.get("learner_id") == user_id:
+        return True
+    profile = db.teacher_profiles.find_one({"_id": booking.get("teacher_id")})
+    return bool(profile and profile.get("user_id") == user_id)
+
+
+def _ice_servers(user_id):
+    ice = [{"urls": url} for url in current_app.config.get("STUN_URLS", [])]
+    turn_urls = current_app.config.get("TURN_URLS", [])
+    shared_secret = current_app.config.get("TURN_SHARED_SECRET", "")
+    if turn_urls and shared_secret:
+        expires = int(clock_time.time()) + max(300, int(current_app.config.get("TURN_CREDENTIAL_TTL_SECONDS", 3600)))
+        username = f"{expires}:{user_id}"
+        credential = base64.b64encode(hmac.new(shared_secret.encode(), username.encode(), hashlib.sha1).digest()).decode()
+        ice.append({"urls": turn_urls, "username": username, "credential": credential})
+    return ice
 
 
 def _validate_booking(payload):
@@ -285,6 +371,7 @@ def get_my_bookings():
 
         result = []
         for b in booking_list:
+            _refresh_review_state(db, b)
             tp = teacher_profiles.get(b.get("teacher_id"))
             teacher_name = None
             if tp:
@@ -344,6 +431,7 @@ def get_received_bookings():
 
         result = []
         for b in booking_list:
+            _refresh_review_state(db, b)
             learner = learners_map.get(b.get("learner_id"))
             learner_name = learner.get("full_name") if learner else None
             s = skills_map.get(b.get("skill_id"))
@@ -379,6 +467,8 @@ def get_booking(booking_id):
         if not is_learner and not is_teacher:
             return _error("You do not have access to this booking", 403)
 
+        _refresh_review_state(db, b)
+
         learner = db.users.find_one({"_id": b.get("learner_id")})
         learner_name = learner.get("full_name") if learner else None
 
@@ -409,6 +499,8 @@ def update_booking_status(booking_id):
     new_status = payload["status"].strip().lower()
     if new_status not in VALID_STATUSES:
         return _error("status must be pending, confirmed, completed, or cancelled", 400)
+    if new_status == "completed":
+        return _error("A booking can be completed only by ending its started classroom session", 400)
 
     try:
         db = get_db()
@@ -432,7 +524,7 @@ def update_booking_status(booking_id):
         if actor.get("role") == "teacher" and teacher_owner:
             allowed = {
                 "pending": {"confirmed", "cancelled"},
-                "confirmed": {"completed", "cancelled"},
+                "confirmed": {"cancelled"},
             }
         elif actor.get("role") == "learner" and learner_owner:
             allowed = {
@@ -447,6 +539,8 @@ def update_booking_status(booking_id):
                 f"Status cannot change from {current_status} to {new_status} for this user",
                 400,
             )
+        if b.get("session_started_at") and new_status == "cancelled":
+            return _error("A started session cannot be cancelled", 400)
 
         db.bookings.update_one(
             {"_id": b_oid, "status": current_status},
@@ -493,11 +587,200 @@ def cancel_booking(booking_id):
             return _error("You do not have access to cancel this booking", 403)
         if b.get("status") not in {"pending", "confirmed"}:
             return _error("Only pending or confirmed bookings can be cancelled", 400)
+        if b.get("session_started_at"):
+            return _error("A started session cannot be cancelled", 400)
 
         db.bookings.update_one(
             {"_id": b_oid, "status": b.get("status")},
             {"$set": {"status": "cancelled"}},
         )
         return jsonify({"message": "Booking cancelled successfully"}), 200
+    except (DatabaseConfigurationError, DatabaseUnavailableError, PyMongoError) as error:
+        return _database_error(error)
+
+
+@bookings_bp.get("/<booking_id>/classroom")
+@jwt_required()
+def get_classroom(booking_id):
+    booking_oid = to_object_id(booking_id)
+    user_id = _current_user_id()
+    if booking_oid is None:
+        return _error("Booking not found", 404)
+    if user_id is None:
+        return _error("Authorization token is invalid", 401)
+    try:
+        db = get_db()
+        booking = db.bookings.find_one({"_id": booking_oid})
+        if booking is None:
+            return _error("Booking not found", 404)
+        if not _is_booking_participant(db, booking, user_id):
+            return _error("You do not have access to this classroom", 403)
+        if booking.get("status") not in {"confirmed", "completed"}:
+            return _error("Only confirmed or completed bookings have a classroom", 409)
+        _refresh_review_state(db, booking)
+        teacher_profile = db.teacher_profiles.find_one({"_id": booking.get("teacher_id")})
+        teacher_user = db.users.find_one({"_id": teacher_profile.get("user_id")}) if teacher_profile else None
+        learner = db.users.find_one({"_id": booking.get("learner_id")})
+        start, end, deadline = _session_window(booking)
+        return jsonify({
+            "booking": _booking_payload(
+                booking,
+                learner_name=learner.get("full_name") if learner else None,
+                teacher_name=teacher_user.get("full_name") if teacher_user else None,
+                party="both",
+            ),
+            "session": {
+                "state": _session_state(booking),
+                "scheduledStart": start.isoformat(),
+                "scheduledEnd": end.isoformat(),
+                "endDeadline": deadline.isoformat(),
+            },
+            "iceServers": _ice_servers(user_id) if _session_state(booking) == "in_progress" else [{"urls": url} for url in current_app.config.get("STUN_URLS", [])],
+            "editor": {"code": booking.get("editor_code", ""), "language": booking.get("editor_language", "javascript"), "revision": booking.get("editor_revision", 0)},
+            "canStart": booking.get("status") == "confirmed" and not booking.get("session_started_at") and start <= datetime.now(start.tzinfo) <= end,
+            "canEnd": booking.get("status") == "confirmed" and _session_state(booking) == "in_progress",
+        }), 200
+    except (DatabaseConfigurationError, DatabaseUnavailableError, PyMongoError) as error:
+        return _database_error(error)
+
+
+@bookings_bp.post("/<booking_id>/classroom/run")
+@jwt_required()
+def run_classroom_code(booking_id):
+    booking_oid = to_object_id(booking_id)
+    user_id = _current_user_id()
+    payload = _json_object()
+    if booking_oid is None:
+        return _error("Booking not found", 404)
+    if user_id is None:
+        return _error("Authorization token is invalid", 401)
+    if not isinstance(payload, dict) or set(payload) - {"code", "language", "stdin"}:
+        return _error("Execution request is invalid", 400)
+    source, language, stdin = payload.get("code"), payload.get("language"), payload.get("stdin", "")
+    if not isinstance(source, str) or not isinstance(stdin, str) or language not in {"javascript", "python", "c", "cpp"}:
+        return _error("Execution request is invalid or this language is not executable", 400)
+    if len(source.encode("utf-8")) > current_app.config["CODE_EXECUTION_MAX_SOURCE_BYTES"] or len(stdin.encode("utf-8")) > current_app.config["CODE_EXECUTION_MAX_STDIN_BYTES"]:
+        return _error("Source code or input exceeds the execution limit", 413)
+    try:
+        db = get_db()
+        booking = db.bookings.find_one({"_id": booking_oid})
+        if booking is None:
+            return _error("Booking not found", 404)
+        if not _is_booking_participant(db, booking, user_id):
+            return _error("You do not have access to this classroom", 403)
+        _refresh_review_state(db, booking)
+        if booking.get("status") != "confirmed" or _session_state(booking) != "in_progress":
+            return _error("Code can run only during an active scheduled classroom session", 409)
+        start, _end, deadline = _session_window(booking)
+        now = datetime.now(timezone.utc).astimezone(start.tzinfo)
+        if now < start or now > deadline:
+            _refresh_review_state(db, booking, now)
+            return _error("The scheduled classroom execution window has closed", 409)
+        try:
+            result = execute_code(language, source, stdin)
+        except UnsupportedExecutionLanguage:
+            return _error("This language is not enabled by the configured execution service", 422)
+        except ExecutionConfigurationError:
+            return _error("Isolated code execution is not configured", 503)
+        except ExecutionServiceError as error:
+            current_app.logger.warning("Classroom execution provider failed (%s)", str(error))
+            return _error("The isolated execution service is unavailable or timed out", 502)
+        latest = db.bookings.find_one({"_id": booking_oid})
+        if latest is None or not _is_booking_participant(db, latest, user_id):
+            return _error("You do not have access to this classroom", 403)
+        _refresh_review_state(db, latest)
+        if latest.get("status") != "confirmed" or _session_state(latest) != "in_progress":
+            return _error("The classroom ended while code was running; output was not shared", 409)
+        current_time = datetime.now(timezone.utc).astimezone(start.tzinfo)
+        if current_time > deadline:
+            _refresh_review_state(db, latest, current_time)
+            return _error("The scheduled classroom execution window has closed", 409)
+        run_id = str(ObjectId())
+        result["runId"] = run_id
+        result["language"] = language
+        socketio.emit("execution:result", result, to=f"classroom:{booking_oid}", namespace="/classroom")
+        return jsonify(result), 200
+    except (DatabaseConfigurationError, DatabaseUnavailableError, PyMongoError) as error:
+        return _database_error(error)
+
+
+@bookings_bp.post("/<booking_id>/session/start")
+@jwt_required()
+def start_classroom_session(booking_id):
+    booking_oid = to_object_id(booking_id)
+    user_id = _current_user_id()
+    if booking_oid is None:
+        return _error("Booking not found", 404)
+    if user_id is None:
+        return _error("Authorization token is invalid", 401)
+    try:
+        db = get_db()
+        booking = db.bookings.find_one({"_id": booking_oid})
+        if booking is None:
+            return _error("Booking not found", 404)
+        actor = _load_user(db, user_id)
+        profile = db.teacher_profiles.find_one({"_id": booking.get("teacher_id")})
+        if not actor or actor.get("role") != "teacher" or not profile or profile.get("user_id") != user_id:
+            return _error("Only the assigned teacher can start this session", 403)
+        if booking.get("status") != "confirmed" or booking.get("session_started_at") or booking.get("session_state") == "review_required":
+            return _error("This confirmed session cannot be started", 409)
+        start, end, deadline = _session_window(booking)
+        now = datetime.now(start.tzinfo)
+        if now < start or now > end:
+            return _error("The classroom can be started only during its scheduled time window", 409)
+        result = db.bookings.update_one(
+            {"_id": booking_oid, "status": "confirmed", "session_started_at": {"$exists": False}},
+            {"$set": {"session_started_at": now.astimezone(timezone.utc), "session_end_deadline": deadline.astimezone(timezone.utc), "session_state": "in_progress"}},
+        )
+        if result.modified_count != 1:
+            return _error("This session has already started or changed", 409)
+        return jsonify({"message": "Classroom session started", "sessionState": "in_progress"}), 200
+    except (DatabaseConfigurationError, DatabaseUnavailableError, PyMongoError) as error:
+        return _database_error(error)
+
+
+@bookings_bp.post("/<booking_id>/session/end")
+@jwt_required()
+def end_classroom_session(booking_id):
+    booking_oid = to_object_id(booking_id)
+    user_id = _current_user_id()
+    if booking_oid is None:
+        return _error("Booking not found", 404)
+    if user_id is None:
+        return _error("Authorization token is invalid", 401)
+    try:
+        db = get_db()
+        booking = db.bookings.find_one({"_id": booking_oid})
+        if booking is None:
+            return _error("Booking not found", 404)
+        actor = _load_user(db, user_id)
+        profile = db.teacher_profiles.find_one({"_id": booking.get("teacher_id")})
+        if not actor or actor.get("role") != "teacher" or not profile or profile.get("user_id") != user_id:
+            return _error("Only the assigned teacher can end this session", 403)
+        if booking.get("status") != "confirmed" or not booking.get("session_started_at") or booking.get("session_ended_at"):
+            return _error("Only a started session can be ended", 409)
+        learner_id = booking.get("learner_id")
+        teacher_user_id = profile.get("user_id")
+        confirmed_call_participants = {str(value) for value in booking.get("call_participants", [])}
+        if str(learner_id) not in confirmed_call_participants or str(teacher_user_id) not in confirmed_call_participants:
+            return _error("Both participants must connect to the live call before the lesson can be completed", 409)
+        start, _end, deadline = _session_window(booking)
+        now = datetime.now(start.tzinfo)
+        if now > deadline:
+            _refresh_review_state(db, booking, now)
+            return _error("The session missed its end window and requires review", 409)
+        result = db.bookings.update_one(
+            {"_id": booking_oid, "status": "confirmed", "session_started_at": {"$exists": True}, "session_ended_at": {"$exists": False}},
+            {"$set": {"session_ended_at": now.astimezone(timezone.utc), "session_state": "completed", "status": "completed"}},
+        )
+        if result.modified_count != 1:
+            return _error("This session has already ended or changed", 409)
+        socketio.emit(
+            "classroom:session_ended",
+            {"bookingId": str(booking_oid), "sessionState": "completed"},
+            to=f"classroom:{booking_oid}",
+            namespace="/classroom",
+        )
+        return jsonify({"message": "Classroom session ended", "sessionState": "completed"}), 200
     except (DatabaseConfigurationError, DatabaseUnavailableError, PyMongoError) as error:
         return _database_error(error)

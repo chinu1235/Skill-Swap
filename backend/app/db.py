@@ -57,6 +57,14 @@ def init_db_indexes(db):
     db.users.create_index([("email", pymongo.ASCENDING)], unique=True, name="uq_users_email")
     db.users.create_index([("role", pymongo.ASCENDING)], name="idx_users_role")
 
+    # New, isolated collection; existing user records are not changed.
+    db.pending_registrations.create_index(
+        [("email", pymongo.ASCENDING)], unique=True, name="uq_pending_registrations_email"
+    )
+    db.pending_registrations.create_index(
+        [("expires_at", pymongo.ASCENDING)], expireAfterSeconds=0, name="ttl_pending_registrations_expiry"
+    )
+
     # 2. Skills collection
     db.skills.create_index([("skill_name", pymongo.ASCENDING)], unique=True, name="uq_skills_skill_name")
     db.skills.create_index([("category", pymongo.ASCENDING)], name="idx_skills_category")

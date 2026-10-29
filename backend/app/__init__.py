@@ -8,13 +8,14 @@ from werkzeug.exceptions import HTTPException
 
 from .config import load_config
 from .db import DatabaseUnavailableError, close_db_connection, get_db, init_db_indexes
-from .extensions import jwt
+from .extensions import jwt, socketio
 from .routes.auth import auth_bp
 from .routes.bookings import bookings_bp
 from .routes.health import health_bp
 from .routes.reviews import reviews_bp
 from .routes.skills import skills_bp
 from .routes.teachers import teachers_bp
+from .classroom_socket import register_classroom_socket_handlers
 
 
 def create_app(test_config=None):
@@ -28,6 +29,12 @@ def create_app(test_config=None):
         app.config.update(test_config)
 
     jwt.init_app(app)
+    socketio.init_app(
+        app,
+        cors_allowed_origins=app.config["FRONTEND_ORIGINS"],
+        message_queue=app.config.get("SOCKETIO_MESSAGE_QUEUE") or None,
+    )
+    register_classroom_socket_handlers(socketio)
 
     logging.basicConfig(level=logging.INFO)
     CORS(
@@ -76,7 +83,7 @@ def create_app(test_config=None):
             db = get_db()
             init_db_indexes(db)
         except Exception as error:
-            app.logger.warning("Initial MongoDB index sync skipped (DB may be offline): %s", error)
+            app.logger.warning("Initial MongoDB index sync skipped (DB may be offline): %s", type(error).__name__)
 
     @app.errorhandler(HTTPException)
     def handle_http_error(error):

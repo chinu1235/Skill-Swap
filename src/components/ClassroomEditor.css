@@ -1,0 +1,7 @@
+.classroom-editor-toolbar .editor-run{white-space:nowrap;min-height:34px;padding:7px 12px;font-size:11px}
+.classroom-monaco-frame{border-radius:0;border-width:0 0 1px}
+.classroom-output{background:#f3f3ed;border-bottom:1px solid var(--line)}
+.classroom-output>div{display:flex;justify-content:space-between;gap:10px;padding:9px 13px;border-bottom:1px solid #e4e5dc;font-size:11px;color:#344539}
+.classroom-output>div span{color:#788479;font-size:10px}
+.classroom-output pre{min-height:58px;max-height:180px;overflow:auto;margin:0;padding:11px 13px;color:#536155;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:560px){.classroom-editor-toolbar{flex-wrap:wrap}.classroom-editor-toolbar label{flex:1}.classroom-editor-toolbar .editor-run{flex:1}}

@@ -1,6 +1,7 @@
 import os
 
 from app import create_app
+from app.extensions import socketio
 
 
 app = create_app()
@@ -14,9 +15,11 @@ if __name__ == "__main__":
     except ValueError as error:
         raise SystemExit("FLASK_PORT must be an integer between 1 and 65535.") from error
 
-    app.run(
+    socketio.run(
+        app,
         host=os.getenv("FLASK_HOST", "127.0.0.1"),
         port=port,
         debug=os.getenv("FLASK_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"},
         use_reloader=False,
+        allow_unsafe_werkzeug=True,
     )
