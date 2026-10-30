@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiRequest, getStoredToken } from '../services/api.js';
@@ -11,7 +11,6 @@ const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000').replac
 
 export default function Classroom() {
   const { bookingId } = useParams();
-  const navigate = useNavigate();
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [code, setCode] = useState('');
@@ -63,12 +62,6 @@ export default function Classroom() {
     const poll = window.setInterval(loadClassroom, 5000);
     return () => window.clearInterval(poll);
   }, [data?.session?.state, loadClassroom]);
-
-  useEffect(() => {
-    if (data?.session?.state === 'completed' && user?.role === 'learner') {
-      navigate('/dashboard', { state: { reviewBookingId: bookingId } });
-    }
-  }, [data?.session?.state, bookingId, user?.role, navigate]);
 
   useEffect(() => {
     if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
@@ -134,6 +127,7 @@ export default function Classroom() {
       socket.on('classroom:session_ended', (event) => {
         if (event?.bookingId !== bookingId) return;
         setData((current) => current ? { ...current, booking: { ...current.booking, status: 'completed' }, session: { ...current.session, state: 'completed' }, canEnd: false } : current);
+        setMessage('The teacher has ended this session.');
       });
       socket.on('connect_error', () => setMessage('Could not connect to classroom signalling. Check the server and network configuration.'));
       socket.on('classroom:participant', (event) => {
@@ -223,7 +217,7 @@ export default function Classroom() {
       local?.getTracks().forEach((track) => track.stop());
       setLocalStream(null); setRemoteStream(null); setInCall(false); setParticipantPresent(false);
     };
-  }, [data?.session?.state, data?.iceServers, bookingId, user?.role, callEnabled, navigate]);
+  }, [data?.session?.state, data?.iceServers, bookingId, user?.role, callEnabled]);
 
   const publishEditorChange = (nextCode, nextLanguage = language) => {
     setCode(nextCode); setLanguage(nextLanguage);
@@ -271,9 +265,13 @@ export default function Classroom() {
   };
 
   const endSession = async () => {
-    if (!window.confirm('End this teaching session? The learner will be taken to the review form.')) return;
+    if (!window.confirm('End this teaching session? Participants will see that it has ended.')) return;
     setBusy(true); setMessage('');
-    try { await apiRequest(`/api/bookings/${bookingId}/session/end`, { method: 'POST', auth: true, body: {} }); await loadClassroom(); }
+    try {
+      await apiRequest(`/api/bookings/${bookingId}/session/end`, { method: 'POST', auth: true, body: {} });
+      await loadClassroom();
+      setMessage('Session has ended successfully.');
+    }
     catch (error) { setMessage(error.message); await loadClassroom(); }
     finally { setBusy(false); }
   };
@@ -310,9 +308,9 @@ export default function Classroom() {
           {state === 'in_progress' && inCall && <>
             <button className="button button-outline" type="button" disabled={!localStream} onClick={() => toggleTrack('video')}>{cameraOn ? 'Turn camera off' : 'Turn camera on'}</button>
             <button className="button button-outline" type="button" disabled={!localStream} onClick={() => toggleTrack('audio')}>{microphoneOn ? 'Mute microphone' : 'Unmute microphone'}</button>
-            <button className="button button-outline" type="button" onClick={leaveCall}>Leave call</button>
+            <button className="button button-outline" type="button" onClick={leaveCall}>Leave Classroom</button>
           </>}
-          {teacher && state === 'in_progress' && data.canEnd && <button className="button classroom-end-button" type="button" disabled={busy} onClick={endSession}>{busy ? 'Ending…' : 'End Session'}</button>}
+          {teacher && ['not_started', 'in_progress'].includes(state) && <button className="button classroom-end-button" type="button" disabled={busy || state !== 'in_progress'} onClick={endSession}>{busy ? 'Ending…' : 'End Session'}</button>}
         </div>
       </section>
       <CodeEditor value={code} language={language} onChange={(value) => publishEditorChange(value)} onLanguageChange={(value) => publishEditorChange(code, value)} readOnly={editorReadOnly} running={executionRunning} sharedOutput={executionOutput} runButtonLabel="Run code" onRun={runCode} className="editor-workspace classroom-editor" />

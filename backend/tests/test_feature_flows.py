@@ -218,12 +218,11 @@ class FeatureFlowTests(TestCase):
             self.assertEqual(direct_complete.status_code, 400)
             started = self.client.post(f"/api/bookings/{booking['_id']}/session/start", json={}, headers={"Authorization": f"Bearer {teacher_token}"})
             self.assertEqual(started.status_code, 200)
+            learner_end = self.client.post(f"/api/bookings/{booking['_id']}/session/end", json={}, headers={"Authorization": f"Bearer {learner_token}"})
+            self.assertEqual(learner_end.status_code, 403)
             booking["editor_code"] = "initial shared code"
             booking["editor_language"] = "javascript"
             booking["editor_revision"] = 7
-            end_without_call = self.client.post(f"/api/bookings/{booking['_id']}/session/end", json={}, headers={"Authorization": f"Bearer {teacher_token}"})
-            self.assertEqual(end_without_call.status_code, 409)
-
             teacher_socket = socketio.test_client(self.app, namespace="/classroom", auth={"token": teacher_token})
             learner_socket = socketio.test_client(self.app, namespace="/classroom", auth={"token": learner_token})
             outsider_socket = socketio.test_client(self.app, namespace="/classroom", auth={"token": outsider_token})
@@ -266,6 +265,7 @@ class FeatureFlowTests(TestCase):
             ended = self.client.post(f"/api/bookings/{booking['_id']}/session/end", json={}, headers={"Authorization": f"Bearer {teacher_token}"})
             self.assertEqual(ended.status_code, 200)
             self.assertEqual(self.db.bookings.docs[0]["status"], "completed")
+            self.assertIsNotNone(self.db.bookings.docs[0].get("session_ended_at"))
             ended_events = [item["args"][0] for item in learner_socket.get_received("/classroom") if item["name"] == "classroom:session_ended"]
             self.assertEqual(ended_events, [{"bookingId": str(booking["_id"]), "sessionState": "completed"}])
             duplicate = self.client.post(f"/api/bookings/{booking['_id']}/session/end", json={}, headers={"Authorization": f"Bearer {teacher_token}"})
@@ -274,6 +274,22 @@ class FeatureFlowTests(TestCase):
             learner_socket.disconnect(namespace="/classroom")
             reconnect_socket.disconnect(namespace="/classroom")
             outsider_socket.disconnect(namespace="/classroom")
+
+    def test_teacher_can_end_session_when_learner_is_disconnected(self):
+        booking, teacher_id, _learner_id = self._make_booking()
+        booking["session_started_at"] = datetime.now(timezone.utc)
+        booking["session_state"] = "in_progress"
+        teacher_token = self._token(teacher_id, "teacher")
+        with patch("app.routes.bookings.get_db", return_value=self.db), patch("app.routes.bookings.socketio.emit") as broadcast:
+            response = self.client.post(
+                f"/api/bookings/{booking['_id']}/session/end",
+                json={},
+                headers={"Authorization": f"Bearer {teacher_token}"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(booking["status"], "completed")
+        self.assertIsNotNone(booking.get("session_ended_at"))
+        broadcast.assert_called_once()
 
     def test_classroom_execution_authorization_validation_and_shared_result(self):
         booking, teacher_id, _learner_id = self._make_booking()

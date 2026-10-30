@@ -759,11 +759,6 @@ def end_classroom_session(booking_id):
             return _error("Only the assigned teacher can end this session", 403)
         if booking.get("status") != "confirmed" or not booking.get("session_started_at") or booking.get("session_ended_at"):
             return _error("Only a started session can be ended", 409)
-        learner_id = booking.get("learner_id")
-        teacher_user_id = profile.get("user_id")
-        confirmed_call_participants = {str(value) for value in booking.get("call_participants", [])}
-        if str(learner_id) not in confirmed_call_participants or str(teacher_user_id) not in confirmed_call_participants:
-            return _error("Both participants must connect to the live call before the lesson can be completed", 409)
         start, _end, deadline = _session_window(booking)
         now = datetime.now(start.tzinfo)
         if now > deadline:
